@@ -1,0 +1,108 @@
+pipeline {
+    agent any
+    
+    tools{
+        nodejs 'nodejs23'
+    }
+    
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+    }
+    stages {
+
+        stage('Git-checkout') {
+            steps {
+                 git branch: 'DC-Ci', url: 'https://github.com/gowthamgandhari/Userdetails.git'
+            }
+        }  
+
+        stage('Frontend Compilation') {
+            steps {
+              dir('client') {
+                  sh 'find . -name "*.js" -exec node --check {} +'
+              }
+            }
+        }
+
+        stage('Backend Compilation') {
+            steps {
+                dir('api') {
+                  sh 'find . -name "*.js" -exec node --check {} +'
+                }
+            }
+        } 
+
+        stage('GitLeaks Scan') {
+            steps {
+                 sh 'gitleaks detect --source ./client --exit-code 1'
+                 sh 'gitleaks detect --source ./api  --exit-code 1'
+            }
+        }
+
+        stage('Sonarqube analysis') {
+            steps {
+                 withSonarQubeEnv('sonar')  {
+                      withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                          sh ''' 
+                            $SCANNER_HOME/bin/sonar-scanner \
+                            -Dsonar.projectName=NodeJs-Project \
+                            -Dsonar.projectKey=NodeJs-Project \
+                            -Dsonar.login=$SONAR_TOKEN
+                          '''
+                      }      
+                 }
+            }
+        }
+
+        stage('Quality Gate Check') {
+            steps {
+                 timeout(time: 1, unit: 'HOURS') {
+                     waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                 }
+            }
+        }
+
+        stage('Trivy FS Scan') {
+            steps {
+                 sh 'trivy fs --format table -o fs-report.html .'
+            }
+        }
+
+        stage('Build-tag and push BE imag to DocekrHub') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'dockerHub-creds') {
+                       dir('api') {
+                         sh 'docker build -t gowthamgandhari/backend:latest .'
+                         sh 'trivy image --format table -o backend-image-report.html gowthamgandhari/backend:latest'
+                         sh 'docker push gowthamgandhari/backend:latest'
+                       }
+                    }
+                }
+            }
+        }    
+
+        stage('Build-tag and push FE imag to DocekrHub') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'dockerHub-creds') {
+                       dir('api') {
+                         sh 'docker build -t gowthamgandhari/frontend:latest .'
+                         sh 'trivy image --format table -o backend-image-report.html gowthamgandhari/frontend:latest'
+                         sh 'docker push gowthamgandhari/frontend:latest'
+                       }
+                    }
+                }
+            }
+        }
+
+        stage('Docker Deploy via Compose') {
+            steps {
+                script {
+                    sh 'docker-compose up -d'
+                }
+            }
+        }
+    }    
+}   
+        
